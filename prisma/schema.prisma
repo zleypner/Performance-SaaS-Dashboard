@@ -1,0 +1,217 @@
+// Prisma schema for SaaS Dashboard
+// Performance optimizations: indexes on foreign keys, date columns, and sort columns
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ================================
+// NextAuth.js Models
+// ================================
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  passwordHash  String?   // For credentials auth
+  role          UserRole  @default(USER)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  accounts      Account[]
+  sessions      Session[]
+  organization  Organization? @relation(fields: [organizationId], references: [id])
+  organizationId String?
+
+  // Indexes for common queries
+  @@index([email])
+  @@index([organizationId])
+  @@index([createdAt])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expires])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ================================
+// Business Models
+// ================================
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  plan      PlanType @default(FREE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  users         User[]
+  customers     Customer[]
+  transactions  Transaction[]
+  dailyMetrics  DailyMetric[]
+
+  @@index([slug])
+  @@index([createdAt])
+}
+
+model Customer {
+  id             String        @id @default(cuid())
+  email          String
+  name           String?
+  status         CustomerStatus @default(ACTIVE)
+  monthlyRevenue Decimal       @default(0) @db.Decimal(10, 2)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  churnedAt      DateTime?
+
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId String
+  transactions   Transaction[]
+
+  // Composite index for organization-scoped queries
+  @@unique([organizationId, email])
+  @@index([organizationId, status])
+  @@index([organizationId, createdAt])
+  @@index([organizationId, churnedAt])
+  @@index([status])
+}
+
+model Transaction {
+  id          String            @id @default(cuid())
+  amount      Decimal           @db.Decimal(10, 2)
+  currency    String            @default("USD")
+  status      TransactionStatus @default(COMPLETED)
+  type        TransactionType   @default(PAYMENT)
+  description String?
+  createdAt   DateTime          @default(now())
+
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId String
+  customer       Customer     @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  customerId     String
+
+  // Indexes for filtering, sorting, and aggregation queries
+  @@index([organizationId, createdAt])
+  @@index([organizationId, status])
+  @@index([customerId, createdAt])
+  @@index([createdAt]) // For date range queries
+}
+
+// Pre-aggregated daily metrics for fast dashboard queries
+// This avoids expensive COUNT/SUM queries on large transaction tables
+model DailyMetric {
+  id               String   @id @default(cuid())
+  date             DateTime @db.Date
+
+  // Revenue metrics
+  revenue          Decimal  @default(0) @db.Decimal(12, 2)
+  transactionCount Int      @default(0)
+
+  // User metrics
+  activeUsers      Int      @default(0)
+  newUsers         Int      @default(0)
+
+  // Customer metrics
+  totalCustomers   Int      @default(0)
+  newCustomers     Int      @default(0)
+  churnedCustomers Int      @default(0)
+
+  // Conversion (e.g., trial to paid)
+  conversionRate   Decimal  @default(0) @db.Decimal(5, 2)
+
+  // Relations
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  organizationId String
+
+  // Unique constraint for upsert operations
+  @@unique([organizationId, date])
+
+  // Index for date range queries (most common dashboard query pattern)
+  @@index([organizationId, date])
+  @@index([date])
+}
+
+// ================================
+// Enums
+// ================================
+
+enum UserRole {
+  USER
+  ADMIN
+  OWNER
+}
+
+enum PlanType {
+  FREE
+  STARTER
+  PRO
+  ENTERPRISE
+}
+
+enum CustomerStatus {
+  ACTIVE
+  CHURNED
+  TRIAL
+  PAUSED
+}
+
+enum TransactionStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+}
+
+enum TransactionType {
+  PAYMENT
+  REFUND
+  SUBSCRIPTION
+  ONE_TIME
+}
